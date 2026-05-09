@@ -4,72 +4,70 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
 
-app = Flask(__name__)
+# यहाँ पक्का करें कि Flask को पता हो कि templates फोल्डर कहाँ है
+app = Flask(__name__, template_folder='templates')
 
 # --- Firebase Setup ---
-# Render पर Secret Files /etc/secrets/ फोल्डर में होती हैं
 firebase_path = "/etc/secrets/serviceAccountKey.json"
+local_path = "serviceAccountKey.json"
+
+db = None # शुरुआत में खाली रखें
 
 try:
     if not firebase_admin._apps:
-        # यहाँ हमने सही रास्ता (Path) डाल दिया है
         if os.path.exists(firebase_path):
             cred = credentials.Certificate(firebase_path)
             firebase_admin.initialize_app(cred)
-            print("Firebase connected successfully!")
-        else:
-            # अगर फाइल वहां नहीं है, तो लोकल चेक करेगा (Testing के लिए)
-            cred = credentials.Certificate("serviceAccountKey.json")
+            print("Connected using Render Secrets")
+        elif os.path.exists(local_path):
+            cred = credentials.Certificate(local_path)
             firebase_admin.initialize_app(cred)
+            print("Connected using Local file")
+        else:
+            print("WARNING: No serviceAccountKey.json found anywhere!")
             
-    db = firestore.client()
+    if firebase_admin._apps:
+        db = firestore.client()
 except Exception as e:
-    print(f"Firebase Error: {e}")
+    print(f"Firebase Setup Error: {e}")
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    try:
+        return render_template('index.html')
+    except Exception as e:
+        # अगर index.html नहीं मिली, तो ये मैसेज दिखेगा
+        return f"Error: HTML file not found in templates folder. Details: {e}", 500
 
 @app.route('/add_entry', methods=['POST'])
 def add_entry():
+    if db is None:
+        return jsonify({"status": "error", "message": "Database not connected!"}), 500
+    
     try:
         data = request.get_json()
-        
-        item = data.get('item', 'Unknown Item')
+        item = data.get('item', 'Unknown')
         buy = float(data.get('buy', 0))
         sell = float(data.get('sell', 0))
         
-        # Calculation Logic
-        gst_rate = 18
-        tax_amount = round((sell * gst_rate) / 100, 2)
-        profit = round(sell - buy - tax_amount, 2)
+        gst = round((sell * 18) / 100, 2)
+        profit = round(sell - buy - gst, 2)
         
         record = {
             'item_name': item,
             'purchase_price': buy,
             'sale_price': sell,
-            'gst_tax_18': tax_amount,
+            'gst_tax_18': gst,
             'net_profit': profit,
-            'timestamp': datetime.now(), 
-            'date_str': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'currency': 'INR'
+            'timestamp': datetime.now(),
+            'date_str': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
-        # Firestore में डेटा सेव करना
         db.collection('Company_Accounts').add(record)
-        
-        return jsonify({
-            "status": "success", 
-            "message": f"{item} का डेटा सेव हो गया!",
-            "data": {"profit": profit, "tax": tax_amount}
-        })
-
-    except ValueError:
-        return jsonify({"status": "error", "message": "कृपया सही नंबर भरें"}), 400
+        return jsonify({"status": "success", "profit": profit})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Render के लिए पोर्ट 5000 के बजाय environment port लेना बेहतर है
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
